@@ -1,0 +1,331 @@
+---
+title: "Ecological Genomics Tutorials: Population & Landscape Genomics 8"
+date: 'October 04, 2023'
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+fontsize: 18pt
+---
+
+# Learning Objectives for 10/04/23
+
+# Geneotype-Enviroment Association (GEA) on selection outlier loci!
+
+1. Revisit pcANGSD selection scan to output genetic PCs and outlier loci list
+2. Extract climate data for red spruce localities and summarize with PCA 
+3. Run genotype-environment association (GEA) analysis running 
+
+We've now learned about outlier loci that show extreme population structure along genetic PC axes. These are loci that tend to have high Fst (population structure) suggestive of selection and local adaptation. But how does this relate to different aspects of the environment? How do we know what environmental gradients might be responsible for driving this population differentiation? Where's the "landscape" in all this genomics stuff?
+
+That's where GEA comes in -- shorthand for **"Genotype-Environment Association"**. 
+
+The whole idea behind GEA is to look for loci that show strong associations between allele frequencies (aka, genotypes) and environmental gradients (aka, climate). 
+
+<img src="https://www.mdpi.com/genes/genes-12-00110/article_deploy/html/images/genes-12-00110-g003.png" width="500" height="500" />
+
+<font size="0.75">*Figure from: De La Torre, A.R., Wilhite, B., Puiu, D., St. Clair, J.B., Crepeau, M.W., Salzberg, S.L., Langley, C.H., Allen, B. and Neale, D.B., 2021. Dissecting the polygenic basis of cold adaptation using genome-wide association of traits and environmental data in Douglas-fir. Genes, 12(1), p.110.*</font>
+
+There's a substantial literature on GEA methods in landscape genomics, but a good background paper is [Rellstab et al. (2015)](https://onlinelibrary.wiley.com/doi/full/10.1111/mec.13322). 
+
+For any GEA analysis, you essentially need two things:
+
+1.    Genotype data from individuals sampled across one or more environmental gradients. 
+2.    Environmental data (like climate) you want to test as drivers of the selection on allele frequencies. 
+
+Our approach will not be to test every SNP locus with GEA, but rather just test the outlier loci we identified from pcANGSD as showing evidence of selection. By pairing that with the GEA, we can refine our inference of selection by asking if these outliers are likely selected on as a result of one or more environmental gradients.
+
+### 1. Re-visit the pcANGSD results to get necessary outlier info and covariates
+
+(a). Last session, we produced a list of outlier loci, but we had some trouble applying our significance cutoff and exporting our list of outlier loci. That's take a second and make sure that's good now. 
+
+In R:
+
+```
+library(RcppCNPy) # for reading python numpy (.npy) files
+
+setwd("")
+
+list.files()
+
+### read in selection statistics (these are chi^2 distributed)
+
+s<-npyLoad("allRS_poly.selection.npy")
+
+# convert test statistic to p-value
+pval <- as.data.frame(1-pchisq(s,1))
+names(pval) = c("p_PC1","p_PC2")
+
+## read positions
+p <- read.table("allRS_poly_mafs.sites",sep="\t",header=T, stringsAsFactors=T)
+dim(p)
+
+p_filtered = p[which(p$kept_sites==1),]
+dim(p_filtered)
+
+# get all the outliers with p-values below some cutoff
+cutoff=1e-3   
+
+outliers_PC1 <- p_filtered[which(pval$p_PC1<cutoff),c("chromo","position")]
+
+# how many outlier loci < the cutoff?
+dim(outliers_PC1)[1]
+
+
+# write them out to a file
+write.table(outliers_PC1,
+  "allRS_poly_outliers_PC1.txt", 
+  sep=":",
+  quote=F,
+  row.names=F,
+  col.names=F)
+
+```
+
+(b). We also want to export the scores for each of our individuals along the genetic PC1 and PC2 axes.  We'll use these scores as covariates in our GEA model to control for the overall effects of population structure when testing for climate association.
+
+```
+
+COV <- as.matrix(read.table("allRS_poly.cov"))
+
+PCA <- eigen(COV)
+
+data=as.data.frame(PCA$vectors)
+data=data[,c(1:2)] # the second number here is the number of PC axes you want to keep
+
+write.table(data,
+            "allRS_poly_genPC1_2.txt",
+            sep="\t",
+            quote=F,
+            row.names=F,
+            col.names=F)
+            
+```
+
+### 2. Getting `Bioclim` climate data for our red spruce samples
+
+We can also use R to query the [Worldclim climate database](https://www.worldclim.org/data/worldclim21.html) and pull out the bioclim variables for each of our samples based on their lat/longs.
+
+Remember, the following code is in R, not bash ;)
+
+```
+# You made need to use "install.packages" if you don't have some of the below libraries already
+
+library(raster)
+library(FactoMineR)
+library(factoextra)
+library(corrplot)
+
+setwd("")
+
+bio <- getData("worldclim",var="bio",res=10)
+
+coords <- read.csv("https://www.uvm.edu/~kellrlab/forClass/colebrookSampleMetaData.csv", header=T)
+
+The chunk below refers to your bamlist file that you transferred during last week's PCA/admixture analysis.  It should be the same one you want to use here -- if your sample list for analysis changes in the future, you'll need a different bamlist!
+
+names <- read.table("allRS_bam.list")
+names <- unlist(strsplit(basename(as.character(names[,1])), split = ".sorted.rmdup.bam"))
+split = strsplit(names, "_")
+pops <- data.frame(names[1:95], do.call(rbind, split[1:95]))
+names(pops) = c("Ind", "Pop", "Row", "Col")
+
+angsd_coords <- merge(pops, coords, by.x="Ind", by.y="Tree")
+
+points <- SpatialPoints(angsd_coords[c("Longitude","Latitude")])
+
+clim <- extract(bio,points)
+
+angsd_coords_clim <- cbind.data.frame(angsd_coords,clim)
+str(angsd_coords_clim)
+```
+
+#### And just like that, we've got Bioclim data for our samples!
+
+Now, we don't want to test all 19 variables in our GEA, but rather just one or a few that seem to capture the climate gradients in our samples. 
+
+For this, we can use PCA on the climate data (so, an environmental, not a genetic PCA in this case). Using the cliamte PCA can then let us see which variables most strongly define the climate space of red spruce, and we can then use these for our GEA test.
+
+#### In R:
+```
+
+# Make the climate PCA:
+
+clim_PCA = PCA(angsd_coords_clim[,15:33], graph=T)
+
+# Get a screeplot of cliamte PCA eigenvalues
+
+fviz_eig(clim_PCA)
+
+# What is the climate PCA space our red spruce pops occupy?
+
+fviz_pca_biplot(clim_PCA, 
+             geom.ind="point",
+             col.ind = angsd_coords_clim$Latitude, 
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             title="Climate PCA (Bioclim)",
+             legend.title="Latitude")
+
+# Which variables show the strongest correlation on the first 2 climate PC axes?
+
+dimdesc(clim_PCA)[1:2]
+
+```
+
+Let's export the Bioclim variable most important for each of these axes:
+
+```
+# Replace "XX" with your bio variable most significant on climate PC1:
+
+write.table(scale(angsd_coords_clim["bioXX"]),
+            "allRS_bioXX.txt",
+            sep="\t",
+            quote=F,
+            row.names = F,
+            col.names=F)
+
+
+# Replace "YY" with your bio variable most significant on climate PC2:  
+
+write.table(scale(angsd_coords_clim["bioYY"]),
+            "allRS_bioYY.txt",
+            sep="\t",
+            quote=F,
+            row.names = F,
+            col.names=F)
+            
+```
+
+After you've written this file out, use **FileZilla** to transfer all your new files over to the server and into your `~/myresults/ANGSD` folder. 
+
+
+### 2. Running the GEA to test which outlier loci are associated with climate
+
+Since we are running the GEA analysis on just our oultiers (=candidates for selection), it will be pretty fast! One can also run a genome-wide GEA, which takes much longer...but doable for future studies ;)
+
+We'll use ANGSD again to test for associations between allele frequencies and the bioclim variables while using genotype likelihoods to account for uncertainty. The ANGSD routine we'll use is called `doAsso` which stands for "do Association". It has it's own [manual page on ANGSD's website](http://www.popgen.dk/angsd/index.php/Association)
+
+ANGSD `doAsso` requires genotype *probabilities* (yes, these are slightly different mathematical than genotype *likelihoods*), which means we'll need to call the initial set of ANGSD commands to import the bam's and filter them before sending the probabilities to the `doAsso` function. 
+
+```
+# your usual bash header
+
+# add some notes
+
+
+REF="/netfiles/ecogen/PopulationGenomics/ref_genome/Pabies1.0-genome_reduced.fa"
+
+SUFFIX="allRS"
+
+# Let's start with bio10; can do others as time permits...
+BIOVAR=""
+
+# path to the red spruce bam files
+INPUT="/netfiles/ecogen/PopulationGenomics/fastq/red_spruce/cleanreads/bam"
+
+OUTPUT=
+
+# make the bamlist files
+ls ${INPUT}/*sorted.rmdup.bam >${OUTPUT}/${SUFFIX}_bam.list
+
+
+# Run ANGSD to estimate the genotype probabilities and perform the GEA:
+
+ANGSD -b ${OUTPUT}/${SUFFIX}_bam.list \
+-ref ${REF} -anc ${REF} \
+-out ${OUTPUT}/${SUFFIX}_${BIOVAR} \
+-nThreads 1 \
+-remove_bads 1 \
+-C 50 \
+-baq 1 \
+-minMapQ 20 \
+-minQ 20 \
+-GL 1 \
+-doCounts 1 \
+-minInd 47 \
+-setMinDepthInd 1 \
+-setMaxDepthInd 40 \
+-skipTriallelic 1 \
+-doMajorMinor 1 \
+-doMaf 1 \
+-SNP_pval 1e-6 \
+-minMaf 0.05 \
+-doPost 1 \
+-doAsso 5 \
+-yQuant ${OUTPUT}/allRS_${BIOVAR}.txt \
+-rf ${OUTPUT}/${SUFFIX}_outliers_PC1.txt \
+-cov ${OUTPUT}/${SUFFIX}_genPC1_2.txt
+
+
+```
+That's a lot of options for ANGSD!  
+
+Most of these are identical to what I used for calling the genotype likelihoods (beagle files) that we used as input into pcANGSD. But I wanted to give you all the options and their meaning ([see also the ANGSD manual online](http://www.popgen.dk/angsd/index.php/ANGSD) so you could have them in case you need to change anything.
+
+Those last 5 lines are the important part for the GEA:
+
+| Code option | Meaning |
+|------------|-----------------------------|
+|`doPost 1` | compute genotype probabilities |
+|`doAsso 5` | perform the GEA association test |
+| `-yQuant` | the input environmental variable to test (can only test 1 env at a time) |
+| `rf`      | the list of outlier loci to test, in chromosome:position format |
+| `-cov`    | the list of covariates, in this case, the genetic PC axes describing the pop structure |
+
+You'll also notice that we do this just on loci that are present in at least 5% frequency across the entire set of samples (`-minMaf 0.05`)
+
+Save your script as `ANGSD_GEA.sh`
+
+It will run fast, so probably you don't need a `tmux` session.  
+
+The results will be stored in a file called: `allRS_poly_bioXX.lrt0.gz` where "bioXX is the climate variable you supplied to ${BIOVAR} in the script.
+
+If we peek inside this file, you'll see something like this:
+
+`zcat allRS_poly_bio10.lrt0.gz | head`
+
+```
+Chromosome	Position	Major	Minor	Frequency	N	LRTscore	high_WT/HE/HO	LRTem	beta	SE	emIter
+MA_65255	1119	G	A	0.143663	95	-999.000000	10/1/0	nan	nan	nan	0
+MA_9957507	2373	G	T	0.118974	95	-999.000000	12/2/0	nan	nan	nan	0
+MA_10429602	2561	T	C	0.170879	95	-999.000000	20/4/0	nan	nan	nan	0
+MA_10429602	2590	A	G	0.121700	95	-999.000000	15/0/0	nan	nan	nan	0
+MA_10430260	11653	T	C	0.096735	95	-999.000000	64/4/0	nan	nan	nan	0
+MA_1135	12714	C	A	0.300374	95	0.040177	14/15/2	nan	nan	nan	0
+MA_8953275	2254	T	A	0.254357	95	-999.000000	3/2/6	nan	nan	nan	0
+MA_10435716	4986	T	C	0.182536	95	-999.000000	1/3/0	nan	nan	nan	0
+MA_593911	2820	A	G	0.058739	95	-999.000000	82/4/0	nan	nan	nan	0
+```
+The first 6 columns should be mostly self-explanatory by now.  The later columns mean:
+
+| Column | Meaning |
+|------------|-----------------------------|
+|`LRTscore` | Likelihood Ratio Test (LRT) of whether the SNP is associated with climate |
+|`high_WT/HE/HO` | The counts of homozygous (wildtype):heterozygous:homozygous genotypes |
+| `LRTem` | Another version of the likelihood ratio test (this is the one used to compute significance) |
+| `beta`      | The slope of minor allele frequencies along the climate gradient |
+| `SE`    | The standard error of the slope  |
+| `emIter` | Number of iterations of the EM algorithm used to test for significance in the GEA |
+
+You'll notice that most (maybe all?) of the head on this file has lots of 'nan'. That means those SNPs were not significant (i.e., had no significant association between allele frequencies and the climate gradient).
+
+We can quickly find the loci that *ARE* signficant by doing an "inverted" grep search that finds all the lines in the file that *DON'T* have a match to your search term.  Clever, eh?
+
+`zcat allRS_poly_bio10.lrt0.gz | grep -v "nan" | head `
+
+```
+Chromosome	Position	Major	Minor	Frequency	N	LRTscore	high_WT/HE/HO	LRTem	beta	SE	emIter
+MA_122595	9205	G	A	0.178944	95	4.075774	41/11/05.321326	-0.640934	0.249910	23
+MA_5911667	371	A	G	0.221774	95	8.997344	25/15/011.085109	-0.765536	0.196047	18
+MA_118138	1326	T	C	0.213717	95	6.004392	47/13/25.974007	0.399418	0.214912	2
+MA_472677	1618	A	C	0.131357	95	5.845219	65/13/05.833940	0.568727	0.329935	2
+MA_305431	2240	A	C	0.171533	95	6.603277	52/11/06.529913	0.504134	0.298265	2
+MA_42276	14661	G	A	0.199746	95	11.767473	29/13/014.041176	-0.881066	0.177973	26
+MA_2314	6247	T	A	0.202935	95	9.714111	33/12/0	10.471330	-0.625151	0.171075	9
+```
+
+* *How many significant loci?* (**Hint:** remove the 'head' command and pipe to a different command that counts lines in the file)
+
+* *Do the allele frequencies seem to consistently have positive or negative slopes? What does that mean for the climate gradient you tested?*
+
+* *You could find out what genes and their function are associated with this set of loci using the code we developed at the end of Day 7.*  (**Hint:** Here, you'd be cutting out the first column containing the contig info and using that to grep out the genes from the reference genome annotation. This could then be used at [plantgenie.org](https://plantgenie.org) to look at gene annotationa and function!)
+
