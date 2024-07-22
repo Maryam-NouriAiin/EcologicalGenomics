@@ -1,0 +1,19 @@
+---
+title: "Tutorials and Scripts"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+fontsize: 18pt
+---
+
+[Back to main page](index.html)
+
+
+
+**Microbiome Module**
+
+1. 2021-09-13: [Microbiome tutorial day one](Fall2021/tutorials/2021-09-13_microbiome_Day1.html)
+2. 2021-09-15: [Microbiome tutorial day two](Fall2021/tutorials/2021-09-15_microbiome_Day2.html)
+3. 2021-09-20: [Microbiome tutorial day three](Fall2021/tutorials/2021-09-20_microbiome_Day3.html)
+4. 2021-09-22: [Microbiome tutorial day four](Fall2021/tutorials/2021-09-22_microbiome_Day4.html)
+5. 2021-09-27: [Microbiome tutorial day five](Fall2021/tutorials/2021-09-27_microbiome_Day5.html), plus supplemental code for [taxonomic identification](Fall2021/tutorials/2021_09_27_microbiome_supp_taxaID.html).
